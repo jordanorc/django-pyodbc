@@ -2,7 +2,10 @@ import copy
 import datetime
 
 from django.utils import six
-from django.db.backends.schema import BaseDatabaseSchemaEditor
+try:
+    from django.db.backends.schema import BaseDatabaseSchemaEditor
+except ImportError:
+    BaseDatabaseSchemaEditor = object
 from django.db.utils import DatabaseError
 
 

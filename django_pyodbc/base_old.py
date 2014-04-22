@@ -81,8 +81,6 @@ class DatabaseWrapper(BaseDatabaseWrapper):
     unicode_results = False
     datefirst = 7
     Database = Database
-    
-    encoding = 'utf-8'
 
     # Collations:       http://msdn2.microsoft.com/en-us/library/ms184391.aspx
     #                   http://msdn2.microsoft.com/en-us/library/ms179886.aspx
@@ -118,13 +116,81 @@ class DatabaseWrapper(BaseDatabaseWrapper):
         # TODO: freetext, full-text contains...
     }
 
+    def __init__(self, *args, **kwargs):
+        super(DatabaseWrapper, self).__init__(*args, **kwargs)
+
+        options = self.settings_dict.get('OPTIONS', None)
+
+        if options:
+            self.MARS_Connection = options.get('MARS_Connection', False)
+            self.datefirst = options.get('datefirst', 7)
+            self.unicode_results = options.get('unicode_results', False)
+            self.encoding = options.get('encoding', 'utf-8')
+            self.driver_supports_utf8 = options.get('driver_supports_utf8', None)
+
+            # make lookup operators to be collation-sensitive if needed
+            self.collation = options.get('collation', None)
+            if self.collation:
+                self.operators = dict(self.__class__.operators)
+                ops = {}
+                for op in self.operators:
+                    sql = self.operators[op]
+                    if sql.startswith('LIKE '):
+                        ops[op] = '%s COLLATE %s' % (sql, self.collation)
+                self.operators.update(ops)
+
+        self.test_create = self.settings_dict.get('TEST_CREATE', True)
+
+        if _DJANGO_VERSION >= 13:
+            self.features = DatabaseFeatures(self)
+        else:
+            self.features = DatabaseFeatures()
+        self.ops = DatabaseOperations(self)
+        self.client = DatabaseClient(self)
+        self.creation = DatabaseCreation(self)
+        self.introspection = DatabaseIntrospection(self)
+        self.validation = BaseDatabaseValidation(self)
+
+        self.connection = None
 
     def get_connection_params(self):
-        """Returns a dict of parameters suitable for get_new_connection."""
-        conn_params = self.settings_dict['OPTIONS'].copy()
+        settings_dict = self.settings_dict
+        if not settings_dict['NAME']:
+            from django.core.exceptions import ImproperlyConfigured
+            raise ImproperlyConfigured(
+                "settings.DATABASES is improperly configured. "
+                "Please supply the NAME value.")
+        conn_params = {
+            'database': settings_dict['NAME'],
+        }
+        conn_params.update(settings_dict['OPTIONS'])
+        if 'autocommit' in conn_params:
+            del conn_params['autocommit']
+        if settings_dict['USER']:
+            conn_params['user'] = settings_dict['USER']
+        if settings_dict['PASSWORD']:
+            conn_params['password'] = settings_dict['PASSWORD']
+        if settings_dict['HOST']:
+            conn_params['host'] = settings_dict['HOST']
+        if settings_dict['PORT']:
+            conn_params['port'] = settings_dict['PORT']
         return conn_params
 
-    def _connect_string(self):
+    def get_new_connection(self, conn_params):
+        return Database.connect(**conn_params)
+
+    def init_connection_state(self):
+        pass
+
+    def _set_autocommit(self, autocommit):
+        pass
+    
+    # for migrations in django 1.7
+    def schema_editor(self, *args, **kwargs):
+        "Returns a new instance of this backend's SchemaEditor"
+        return DatabaseSchemaEditor(self, *args, **kwargs)
+
+    def _get_connection_string(self):
         settings_dict = self.settings_dict
         db_str, user_str, passwd_str, port_str = None, None, "", None
         options = settings_dict['OPTIONS']
@@ -202,68 +268,7 @@ class DatabaseWrapper(BaseDatabaseWrapper):
         connectionstring = ';'.join(cstr_parts)
         return connectionstring
 
-    def get_new_connection(self, conn_params):
-        """Opens a connection to the database."""
-        conn_string = self._connect_string()
-        print conn_string
-        print conn_params
-        return Database.connect(conn_string, **conn_params)
-
-    def init_connection_state(self):
-        """Initializes the database connection settings."""
-        pass
-
-    def create_cursor(self):
-        """Creates a cursor. Assumes that a connection is established."""
-        cursor = self.connection.cursor()
-        return CursorWrapper(cursor, self.driver_supports_utf8, self.encoding)
-
-    def __init__(self, *args, **kwargs):
-        super(DatabaseWrapper, self).__init__(*args, **kwargs)
-
-        options = self.settings_dict.get('OPTIONS', None)
-
-        if options:
-            self.MARS_Connection = options.get('MARS_Connection', False)
-            self.datefirst = options.get('datefirst', 7)
-            self.unicode_results = options.get('unicode_results', False)
-            self.encoding = options.get('encoding', 'utf-8')
-            self.driver_supports_utf8 = options.get('driver_supports_utf8', None)
-
-            # make lookup operators to be collation-sensitive if needed
-            self.collation = options.get('collation', None)
-            if self.collation:
-                self.operators = dict(self.__class__.operators)
-                ops = {}
-                for op in self.operators:
-                    sql = self.operators[op]
-                    if sql.startswith('LIKE '):
-                        ops[op] = '%s COLLATE %s' % (sql, self.collation)
-                self.operators.update(ops)
-
-        self.test_create = self.settings_dict.get('TEST_CREATE', True)
-
-        if _DJANGO_VERSION >= 13:
-            self.features = DatabaseFeatures(self)
-        else:
-            self.features = DatabaseFeatures()
-        self.ops = DatabaseOperations(self)
-        self.client = DatabaseClient(self)
-        self.creation = DatabaseCreation(self)
-        self.introspection = DatabaseIntrospection(self)
-        self.validation = BaseDatabaseValidation(self)
-
-        self.connection = None
-
-    def _set_autocommit(self, autocommit):
-        pass
-    
-    # for migrations in django 1.7
-    def schema_editor(self, *args, **kwargs):
-        "Returns a new instance of this backend's SchemaEditor"
-        return DatabaseSchemaEditor(self, *args, **kwargs)
-
-    '''def _cursor(self):
+    def _cursor(self):
         new_conn = False
         settings_dict = self.settings_dict
 
@@ -323,7 +328,7 @@ class DatabaseWrapper(BaseDatabaseWrapper):
             elif self.driver_supports_utf8 is None:
                 self.driver_supports_utf8 = (self.drv_name == 'SQLSRV32.DLL'
                                              or ms_sqlncli.match(self.drv_name))
-        return CursorWrapper(cursor, self.driver_supports_utf8, self.encoding)'''
+        return CursorWrapper(cursor, self.driver_supports_utf8, self.encoding)
 
     def _execute_foreach(self, sql, table_names=None):
         cursor = self.cursor()
@@ -401,7 +406,6 @@ class CursorWrapper(object):
         return tuple(fp)
 
     def execute(self, sql, params=()):
-        print sql
         self.last_sql = sql
         sql = self.format_sql(sql, len(params))
         params = self.format_params(params)
