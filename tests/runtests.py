@@ -103,6 +103,15 @@ def setup(verbosity, test_labels):
         logger = logging.getLogger('py.warnings')
         handler = logging.StreamHandler()
         logger.addHandler(handler)
+        
+     
+    
+    # django 1.7 specific
+    try:
+        import django
+        django.setup()
+    except AttributeError:
+        pass
 
     # Load all the ALWAYS_INSTALLED_APPS.
     with warnings.catch_warnings():

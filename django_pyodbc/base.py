@@ -1,13 +1,25 @@
 """
 MS SQL Server database backend for Django.
 """
+from django import VERSION as DjangoVersion
+from django.conf import settings
+from django.core.exceptions import ImproperlyConfigured
+from django.db import utils
+from django.db.backends import BaseDatabaseWrapper, BaseDatabaseFeatures, \
+    BaseDatabaseValidation
+from django.db.backends.signals import connection_created
+from django_pyodbc.client import DatabaseClient
+from django_pyodbc.compat import binary_type, text_type, timezone
+from django_pyodbc.creation import DatabaseCreation
+from django_pyodbc.introspection import DatabaseIntrospection
+from django_pyodbc.operations import DatabaseOperations
+from django_pyodbc.schema import DatabaseSchemaEditor
 import datetime
 import os
 import re
 import sys
 import warnings
 
-from django.core.exceptions import ImproperlyConfigured
 
 try:
     import pyodbc as Database
@@ -22,11 +34,6 @@ pyodbc_ver = tuple(map(int, vlist))
 if pyodbc_ver < (2, 0, 38, 9999):
     raise ImproperlyConfigured("pyodbc 2.0.38 or newer is required; you have %s" % Database.version)
 
-from django.db import utils
-from django.db.backends import BaseDatabaseWrapper, BaseDatabaseFeatures, BaseDatabaseValidation
-from django.db.backends.signals import connection_created
-from django.conf import settings
-from django import VERSION as DjangoVersion
 if DjangoVersion[:2] == (1, 7):
     _DJANGO_VERSION = 17
 elif DjangoVersion[:2] == (1, 6):
@@ -42,11 +49,6 @@ elif DjangoVersion[:2] == (1, 2):
 else:
     raise ImproperlyConfigured("Django %d.%d is not supported." % DjangoVersion[:2])
 
-from django_pyodbc.operations import DatabaseOperations
-from django_pyodbc.client import DatabaseClient
-from django_pyodbc.compat import binary_type, text_type, timezone
-from django_pyodbc.creation import DatabaseCreation
-from django_pyodbc.introspection import DatabaseIntrospection
 
 DatabaseError = Database.Error
 IntegrityError = Database.IntegrityError
@@ -186,6 +188,11 @@ class DatabaseWrapper(BaseDatabaseWrapper):
 
     def _set_autocommit(self, autocommit):
         pass
+    
+    # for migrations in django 1.7
+    def schema_editor(self, *args, **kwargs):
+        "Returns a new instance of this backend's SchemaEditor"
+        return DatabaseSchemaEditor(self, *args, **kwargs)
 
     def _get_connection_string(self):
         settings_dict = self.settings_dict
@@ -204,7 +211,8 @@ class DatabaseWrapper(BaseDatabaseWrapper):
         if settings_dict['PORT']:
             port_str = settings_dict['PORT']
 
-        if not db_str:
+        # django 1.7 avoid selecting production database - https://code.djangoproject.com/ticket/16969
+        if _DJANGO_VERSION < 17 and not db_str:
             raise ImproperlyConfigured('You need to specify NAME in your Django settings file.')
 
         cstr_parts = []
@@ -253,7 +261,8 @@ class DatabaseWrapper(BaseDatabaseWrapper):
             else:
                 cstr_parts.append('Integrated Security=SSPI')
 
-        cstr_parts.append('DATABASE=%s' % db_str)
+        if db_str:
+            cstr_parts.append('DATABASE=%s' % db_str)
 
         if self.MARS_Connection:
             cstr_parts.append('MARS_Connection=yes')
@@ -266,7 +275,6 @@ class DatabaseWrapper(BaseDatabaseWrapper):
     def _cursor(self):
         new_conn = False
         settings_dict = self.settings_dict
-
 
         if self.connection is None:
             new_conn = True
@@ -281,7 +289,6 @@ class DatabaseWrapper(BaseDatabaseWrapper):
                 self.connection = Database.connect(connstr, \
                         autocommit=autocommit)
             connection_created.send(sender=self.__class__, connection=self)
-
         cursor = self.connection.cursor()
         if new_conn:
             # Set date format for the connection. Also, make sure Sunday is
@@ -325,7 +332,6 @@ class DatabaseWrapper(BaseDatabaseWrapper):
             elif self.driver_supports_utf8 is None:
                 self.driver_supports_utf8 = (self.drv_name == 'SQLSRV32.DLL'
                                              or ms_sqlncli.match(self.drv_name))
-
         return CursorWrapper(cursor, self.driver_supports_utf8, self.encoding)
 
     def _execute_foreach(self, sql, table_names=None):
